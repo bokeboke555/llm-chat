@@ -1,140 +1,122 @@
 import argparse
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoProcessor, TextStreamer, MllamaForConditionalGeneration
+from PIL import Image
+from Model import Model
+from Mllama import Mllama
 
 
-class LLM:
+def chat(model,
+         image=None,
+         new_max_tokens=4096,
+         do_sample=True,
+         temperature=0.7,
+         verbose=False,
+         debug=False):
+    if verbose:
+        print("Image:", image)
+        print("New max tokens:", new_max_tokens)
+        print("Do sample:", do_sample)
+        print("Temperature:", temperature)
 
-    def __init__(self,
-                 model_file_path,
-                 mllama=False,
-                 verbose=False,
-                 debug=False):
-        self.model_file_path = model_file_path
-        self.mllama = mllama
-        self.verbose = verbose
-        self.debug = debug
-
-        self.tokenizer = None
-        self.processor = None
-        self.model = None
-        self.streamer = None
-        
-        return
-
-    def load_model(self):
-        if self.verbose:
-            print("Load tokenizer:", self.model_file_path)
-        if self.mllama:
-            self.processor = AutoProcessor.from_pretrained(
-                self.model_file_path,
-            )
-        else:
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.model_file_path,
-                #local_files_only=True,
-                #device_map="auto",
-                #torch_dtype="auto",
-            )
-        if self.verbose:
-            print("Load model:", self.model_file_path)
-        if self.mllama:
-            self.model = MllamaForConditionalGeneration.from_pretrained(
-                self.model_file_path,
-                local_files_only=True,
-                device_map="auto",
-                torch_dtype=torch.bfloat16,
-                #load_in_8bit=True,
-                load_in_4bit=True,
-                #attn_implementation="flash_attention_2",
-            )
-        else:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_file_path,
-                local_files_only=True,
-                device_map="auto",
-                torch_dtype=torch.bfloat16,
-                #torch_dtype=torch.int8,
-                #load_in_8bit=True,
-                load_in_4bit=True,
-                #attn_implementation="flash_attention_2",
-            )
-        self.streamer = TextStreamer(self.tokenizer)
-        return
-
-    def chat(self):
-        while True:
-            line = input('> ')
-            if self.debug:
-                print("Input text:", line)
-            if line == "quit" or line == "exit":
-                break
-            with torch.no_grad():
-                if self.mllama:
-                    messages = [
-                        {"role": "user",
-                         "content": [
-                             {"type": "text", "text": line},
-                         ]
-                        },
-                    ]
-                    input_text = self.processor.apply_chat_template(
-                        messages,
-                        add_generation_prompt=True
-                    )
-                    input_ids = self.processor(
-                        None,
-                        input_text,
-                        return_tensors="pt",
-                        add_special_tokens=False,
-                    )
-                else:
-                    if True:
-                        messages = [
-                            {"role": "user",
-                             "content": line},
-                        ]
-                        input_ids = self.tokenizer.apply_chat_template(
-                            messages,
-                            return_tensors="pt",
-                            return_dict=True
-                        )
-                    else:
-                        input_ids = self.tokenizer(
-                            line,
-                            return_tensors="pt"
-                        )
-                input_ids = input_ids.to(self.model.device)
-                output_tokens = self.model.generate(
-                    **input_ids,
-                    max_new_tokens=4096,
-                    do_sample=True,
-                    temperature=0.7,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id,
-                    streamer=self.streamer,
-                )
-            if self.mllama:
-                output = self.processor.decode(output_tokens[0], skip_special_tokens=True)
-            else:
-                output = self.tokenizer.decode(output_tokens[0], skip_special_tokens=True)
+    history = None
+    while True:
+        line = input('> ')
+        if debug:
+            print("Input text:", line)
+        if line == "quit" or line == "exit":
+            break
+        output, history = model.query(
+            line,
+            image=image,
+            history=history,
+            new_max_tokens=new_max_tokens,
+            do_sample=do_sample,
+            temperature=temperature,
+        )
+        if not model.streaming:
             print(output)
-        return
+        if debug:
+            print("Output:", output)
+            print("history:", history)
+    return
 
     
 def main():
     parser = argparse.ArgumentParser(description="Chat for LLM.")
     parser.add_argument("--mllama", action='store_true')
+    parser.add_argument(
+        "--torch-dtype",
+        choices=["bfloat16", "float16", "float32"],
+        default="bfloat16"
+    )
+    parser.add_argument(
+        "--quantize",
+        choices=["none", "q8", "q4", "nf4", "fp4"],
+        default="nf4"
+    )
+    parser.add_argument("--no-streaming", action='store_true')
+    parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument("--do-not-sample", action='store_true')
+    parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("-i", "--image")
     parser.add_argument("-v", "--verbose", action='store_true')
     parser.add_argument("-X", "--debug", action='store_true')
     parser.add_argument("model")
+    
     args = parser.parse_args()
+    
+    do_sample = True
+    if args.do_not_sample:
+        do_sample = False
+    streaming = True
+    if args.no_streaming:
+        streaming = False
+    image = None
+    if args.image != None:
+        image = Image.open(args.image)
+
+    torch_dtype = torch.bfloat16
+    if args.torch_dtype == "bfloat16":
+        torch_dtype = torch.bfloat16
+    elif args.torch_dtype == "float16":
+        torch_dtype = torch.float16
+    elif args.torch_dtype == "float32":
+        torch_dtype = torch.float32
+
+    quantize = args.quantize
+    if quantize == "none":
+        quantize = None
+        
     if args.debug:
         print("Model:", args.model)
+        print("Mllama model:", args.mllama)
+        print("Image path:", args.image)
+        print("Streaming:", streaming)
+        print("Max tokens:", args.max_tokens)
+        print("Do sample:", do_sample)
+        print("temperature:", args.temperature)
 
-    llm = LLM(args.model, mllama=args.mllama, verbose=args.verbose, debug=args.debug)
-    llm.load_model()
-    llm.chat()
+    model_args = {}
+    model_args["model_file_path"] = args.model
+    model_args["streaming"] = streaming
+    model_args["quantize"] = quantize
+    model_args["torch_dtype"] = torch_dtype
+    model_args["verbose"] = args.verbose
+    model_args["debug"] = args.debug
+    if args.mllama:
+        model = Mllama(**model_args)
+    else:
+        model = Model(**model_args)
+    model.load_model()
+    chat_args = {}
+    chat_args["model"] = model
+    chat_args["image"] = image
+    chat_args["new_max_tokens"] = args.max_tokens
+    chat_args["do_sample"] = do_sample
+    chat_args["temperature"] = args.temperature
+    chat_args["verbose"] = args.verbose
+    chat_args["debug"] = args.debug
+    chat(**chat_args)
     
     return
 
