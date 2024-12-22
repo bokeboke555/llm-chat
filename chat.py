@@ -10,6 +10,7 @@ def chat(model,
          new_max_tokens=4096,
          do_sample=True,
          temperature=0.7,
+         system_prompt=None,
          verbose=False,
          debug=False):
     if verbose:
@@ -17,6 +18,7 @@ def chat(model,
         print("New max tokens:", new_max_tokens)
         print("Do sample:", do_sample)
         print("Temperature:", temperature)
+        print("System prompt:", system_prompt)
 
     history = None
     while True:
@@ -32,6 +34,7 @@ def chat(model,
             new_max_tokens=new_max_tokens,
             do_sample=do_sample,
             temperature=temperature,
+            system_prompt=system_prompt,
         )
         if not model.streaming:
             print(output)
@@ -45,8 +48,18 @@ def main():
     parser = argparse.ArgumentParser(description="Chat for LLM.")
     parser.add_argument("--mllama", action='store_true')
     parser.add_argument(
+        "--device-map",
+        choices=["none", "auto", "cuda", "mps"],
+        default="auto"
+    )
+    parser.add_argument(
+        "--to-device",
+        choices=["none", "cuda", "mps"],
+        default="none"
+    )
+    parser.add_argument(
         "--torch-dtype",
-        choices=["bfloat16", "float16", "float32"],
+        choices=["auto", "bfloat16", "float16", "float32"],
         default="bfloat16"
     )
     parser.add_argument(
@@ -59,6 +72,7 @@ def main():
     parser.add_argument("--do-not-sample", action='store_true')
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("-i", "--image")
+    parser.add_argument("--system-prompt", default="あなたは誠実で優秀な日本人のアシスタントです。特に指示が無い場合は、常に日本語で回答してください。")
     parser.add_argument("-v", "--verbose", action='store_true')
     parser.add_argument("-X", "--debug", action='store_true')
     parser.add_argument("model")
@@ -75,17 +89,29 @@ def main():
     if args.image != None:
         image = Image.open(args.image)
 
-    torch_dtype = torch.bfloat16
-    if args.torch_dtype == "bfloat16":
+    device_map = args.device_map
+    if device_map == "none":
+        device_map = None
+    to_device = args.to_device
+    if to_device == "none":
+        to_device = None
+    else:
+        device_map = None
+    torch_dtype = args.torch_dtype
+    if torch_dtype == "bfloat16":
         torch_dtype = torch.bfloat16
-    elif args.torch_dtype == "float16":
+    elif torch_dtype == "float16":
         torch_dtype = torch.float16
-    elif args.torch_dtype == "float32":
+    elif torch_dtype == "float32":
         torch_dtype = torch.float32
 
     quantize = args.quantize
     if quantize == "none":
         quantize = None
+
+    system_prompt = args.system_prompt
+    if system_prompt == "none":
+        system_prompt = None
         
     if args.debug:
         print("Model:", args.model)
@@ -94,11 +120,18 @@ def main():
         print("Streaming:", streaming)
         print("Max tokens:", args.max_tokens)
         print("Do sample:", do_sample)
-        print("temperature:", args.temperature)
+        print("Temperature:", args.temperature)
+        print("System promp:", system_prompt)
+        print("device_map:", device_map)
+        print("to_device:", to_device)
+        print("torch_dtype:", torch_dtype)
+        print("quantize:", quantize)
 
     model_args = {}
     model_args["model_file_path"] = args.model
     model_args["streaming"] = streaming
+    model_args["device_map"] = device_map
+    model_args["to_device"] = to_device
     model_args["quantize"] = quantize
     model_args["torch_dtype"] = torch_dtype
     model_args["verbose"] = args.verbose
@@ -114,6 +147,7 @@ def main():
     chat_args["new_max_tokens"] = args.max_tokens
     chat_args["do_sample"] = do_sample
     chat_args["temperature"] = args.temperature
+    chat_args["system_prompt"] = system_prompt
     chat_args["verbose"] = args.verbose
     chat_args["debug"] = args.debug
     chat(**chat_args)
